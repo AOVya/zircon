@@ -62,7 +62,7 @@ fn msgCallback(message: zircon.Message) ?zircon.Message {
             };
         },
         .PRIVMSG => |msg| {
-            if (std.mem.indexOf(u8, msg.text, prefix_char) != 0) return null;
+            if (std.mem.find(u8, msg.text, prefix_char) != 0) return null;
 
             if (Command.parse(msg.prefix, msg.targets, msg.text)) |command| {
                 return command.handle();

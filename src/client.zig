@@ -14,12 +14,13 @@ const max_msg_len = 512;
 /// Represents an IRC client.
 pub const Client = struct {
     alloc: std.mem.Allocator,
-    stream: std.net.Stream,
-    connection: tls.Connection(std.net.Stream),
-    buf: std.ArrayList(u8),
+    threaded: std.Io.Threaded,
+    io: std.Io,
+    stream: std.Io.net.Stream,
+    connection: tls.Connection,
     replies: std.ArrayList(Message),
-    mutex: std.Thread.Mutex,
-    cond: std.Thread.Condition,
+    mutex: std.Io.Mutex,
+    cond: std.Io.Condition,
     cfg: Config,
 
     /// Configuration for the IRC client.
@@ -60,49 +61,52 @@ pub const Client = struct {
     ///
     /// Returns: A new `Client` instance or an error.
     pub fn init(alloc: std.mem.Allocator, cfg: Config) ClientError!Client {
-        return .{
+        var client: Client = .{
             .alloc = alloc,
+            .threaded = .init_single_threaded,
+            .io = undefined,
             .stream = undefined,
             .connection = undefined,
-            .buf = std.ArrayList(u8).initCapacity(alloc, max_msg_len) catch |err| {
-                utils.debug("Memory allocation failed: {}", .{err});
-                return ClientError.MemoryAllocationFailed;
-            },
-            .replies = std.ArrayList(Message).init(alloc),
-            .mutex = std.Thread.Mutex{},
-            .cond = std.Thread.Condition{},
+            .replies = std.ArrayList(Message).empty,
+            .mutex = .init,
+            .cond = .init,
             .cfg = cfg,
         };
+        client.io = client.threaded.io();
+        return client;
     }
 
     /// Deinitializes the client, freeing resources.
     pub fn deinit(self: *Client) void {
         self.disconnect();
-        self.buf.deinit();
-        self.replies.deinit();
+        self.replies.deinit(self.alloc);
     }
 
     /// Establishes a connection to the IRC server.
     pub fn connect(self: *Client) ClientError!void {
-        // Normal unencrypted TCP connection.
-        self.stream = std.net.tcpConnectToHost(
-            self.alloc,
-            self.cfg.server,
-            self.cfg.port orelse default_port,
-        ) catch |err| {
+        const host = std.Io.net.HostName.init(self.cfg.server) catch |err| {
+            utils.debug("Invalid hostname: {}\n", .{err});
+            return ClientError.ConnectionFailed;
+        };
+        const port = self.cfg.port orelse default_port;
+
+        self.stream = host.connect(self.io, port, .{ .mode = .stream }) catch |err| {
             utils.debug("Connection failed: {}\n", .{err});
             return ClientError.ConnectionFailed;
         };
 
-        // TLS handshake process wrapping a TCP stream.
         if (self.cfg.tls) {
-            const root_ca = tls.config.CertBundle.fromSystem(self.alloc) catch |err| {
+            var root_ca = tls.config.cert.fromSystem(self.alloc, self.io) catch |err| {
                 utils.debug("Could not get root CA: {}", .{err});
                 return ClientError.TlsHandshakeFailed;
             };
-            self.connection = tls.client(self.stream, .{
+            defer root_ca.deinit(self.alloc);
+            const rng_source = std.Random.IoSource{ .io = self.io };
+            self.connection = tls.clientFromStream(self.io, self.stream, .{
                 .host = self.cfg.server,
                 .root_ca = root_ca,
+                .rng = rng_source.interface(),
+                .now = std.Io.Clock.real.now(self.io),
             }) catch |err| {
                 utils.debug("TLS handshake failed: {}", .{err});
                 return ClientError.TlsHandshakeFailed;
@@ -113,18 +117,13 @@ pub const Client = struct {
 
     /// Disconnects from the IRC server.
     pub fn disconnect(self: *Client) void {
-        var buffer: [10]u8 = undefined;
-        const n = self.stream.readAll(buffer[0..]) catch return;
-        if (n == 0) {
-            return;
-        }
         if (self.cfg.tls) {
             self.connection.close() catch |err| {
                 utils.debug("Could not close connection: {}\n", .{err});
                 return;
             };
         }
-        self.stream.close();
+        self.stream.close(self.io);
         utils.debug("Disconnected\n", .{});
     }
 
@@ -214,27 +213,38 @@ pub const Client = struct {
         };
         defer self.alloc.free(raw_msg);
 
-        _ = switch (self.cfg.tls) {
-            true => self.connection.write(raw_msg) catch |err| {
+        if (self.cfg.tls) {
+            self.connection.writeAll(raw_msg) catch |err| {
                 utils.debug("Network write failed: {}", .{err});
                 return ClientError.NetworkWriteFailed;
-            },
-            false => self.stream.write(raw_msg) catch |err| {
+            };
+        } else {
+            var write_buf: [max_msg_len]u8 = undefined;
+            var writer = self.stream.writer(self.io, &write_buf);
+            writer.interface.writeAll(raw_msg) catch |err| {
                 utils.debug("Network write failed: {}", .{err});
                 return ClientError.NetworkWriteFailed;
-            },
-        };
+            };
+            writer.interface.flush() catch |err| {
+                utils.debug("Network flush failed: {}", .{err});
+                return ClientError.NetworkWriteFailed;
+            };
+        }
     }
 
     fn msgCallbackWorker(self: *Client, msg: Message, msg_callback: fn (Message) ?Message) ClientError!void {
         const reply = msg_callback(msg) orelse return;
-        self.mutex.lock();
-        self.replies.append(reply) catch |err| {
+        self.mutex.lock(self.io) catch |err| {
+            utils.debug("Mutex lock failed: {}", .{err});
+            return;
+        };
+        self.replies.append(self.alloc, reply) catch |err| {
+            self.mutex.unlock(self.io);
             utils.debug("Memory allocation failed: {}", .{err});
             return ClientError.MemoryAllocationFailed;
         };
-        self.mutex.unlock();
-        self.cond.signal();
+        self.mutex.unlock(self.io);
+        self.cond.signal(self.io);
     }
 
     fn handleMessage(self: *Client, raw_msg: []u8, loop_config: LoopConfig) ClientError!void {
@@ -244,14 +254,14 @@ pub const Client = struct {
 
         // Handle the PING messages ourselves.
         if (std.mem.eql(u8, raw_msg[0..4], "PING")) {
-            const index = std.mem.indexOf(u8, raw_msg, ":").?;
+            const index = std.mem.find(u8, raw_msg, ":").?;
             const id = raw_msg[index + 1 ..];
             try self.pong(id);
             return;
         }
 
         // Auto-join the configured channels.
-        if (std.mem.indexOf(u8, raw_msg, " 376 ")) |_| {
+        if (std.mem.find(u8, raw_msg, " 376 ")) |_| {
             for (self.cfg.channels) |channel| {
                 try self.join(channel);
             }
@@ -296,38 +306,62 @@ pub const Client = struct {
     ///
     /// - `loop_config`: Main event loop configuration.
     fn readLoop(self: *Client, loop_config: LoopConfig) ClientError!void {
-        while (true) {
-            switch (self.cfg.tls) {
-                true => {
-                    const reader = self.connection.reader();
-                    reader.streamUntilDelimiter(self.buf.writer(), '\n', max_msg_len) catch return;
-                },
-                false => {
-                    const reader = self.stream.reader();
-                    reader.streamUntilDelimiter(self.buf.writer(), '\n', max_msg_len) catch return;
-                },
+        var read_buf: [max_msg_len]u8 = undefined;
+        if (self.cfg.tls) {
+            var reader = self.connection.reader(&read_buf);
+            while (true) {
+                const raw_msg_with_nl = reader.interface.takeDelimiterInclusive('\n') catch |err| switch (err) {
+                    error.EndOfStream => {
+                        utils.debug("Connection Closed\n", .{});
+                        return;
+                    },
+                    else => {
+                        utils.debug("Network read failed: {}\n", .{err});
+                        return ClientError.NetworkReadFailed;
+                    },
+                };
+
+                if (raw_msg_with_nl.len == 0) {
+                    utils.debug("Connection Closed\n", .{});
+                    return;
+                }
+
+                const raw_msg = raw_msg_with_nl[0 .. raw_msg_with_nl.len - 1];
+                try self.handleMessage(raw_msg, loop_config);
             }
+        } else {
+            var reader = self.stream.reader(self.io, &read_buf);
+            while (true) {
+                const raw_msg_with_nl = reader.interface.takeDelimiterInclusive('\n') catch |err| switch (err) {
+                    error.EndOfStream => {
+                        utils.debug("Connection Closed\n", .{});
+                        return;
+                    },
+                    else => {
+                        utils.debug("Network read failed: {}\n", .{err});
+                        return ClientError.NetworkReadFailed;
+                    },
+                };
 
-            // If there's nothing read from the stream, the connection was closed.
-            if (self.buf.items.len == 0) {
-                utils.debug("Connection Closed\n", .{});
-                return;
+                if (raw_msg_with_nl.len == 0) {
+                    utils.debug("Connection Closed\n", .{});
+                    return;
+                }
+
+                const raw_msg = raw_msg_with_nl[0 .. raw_msg_with_nl.len - 1];
+                try self.handleMessage(raw_msg, loop_config);
             }
-
-            // Handle the message previously read and stored in the buffer.
-            try self.handleMessage(self.buf.items[0..self.buf.items.len], loop_config);
-
-            // Clear the client's buffer at the end of the loop.
-            // This is crucial to avoid corrupted messages.
-            self.buf.clearRetainingCapacity();
         }
     }
 
     /// Writes callback reply messages to the server.
     fn writeLoop(self: *Client) ClientError!void {
         while (true) {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lock(self.io) catch |err| {
+                utils.debug("Mutex lock failed: {}", .{err});
+                return;
+            };
+            defer self.mutex.unlock(self.io);
 
             if (self.replies.items.len > 0) {
                 const reply = self.replies.pop() orelse return;
@@ -359,7 +393,10 @@ pub const Client = struct {
                     },
                 }
             } else {
-                self.cond.wait(&self.mutex);
+                self.cond.wait(self.io, &self.mutex) catch |err| {
+                    utils.debug("Condition wait failed: {}", .{err});
+                    return;
+                };
             }
         }
     }

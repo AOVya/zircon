@@ -21,9 +21,7 @@ pub fn build(b: *std.Build) void {
 
     const docs_obj = b.addObject(.{
         .name = "zircon",
-        .root_source_file = b.path("src/zircon.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = zircon_mod,
     });
 
     const docs = docs_obj.getEmittedDocs();
@@ -33,4 +31,11 @@ pub fn build(b: *std.Build) void {
         .install_dir = .prefix,
         .install_subdir = "../docs",
     }).step);
+
+    const test_step = b.step("test", "Run unit tests");
+    const test_obj = b.addTest(.{
+        .name = "zircon-test",
+        .root_module = zircon_mod,
+    });
+    test_step.dependOn(&b.addRunArtifact(test_obj).step);
 }

@@ -4,20 +4,26 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe = b.addExecutable(.{
-        .name = "simpleclient",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
     const zircon = b.dependency("zircon", .{
         .target = target,
         .optimize = optimize,
     });
 
-    exe.root_module.addImport("zircon", zircon.module("zircon"));
-    exe.linkLibC();
+    const exe = b.addExecutable(.{
+        .name = "simpleclient",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{
+                    .name = "zircon",
+                    .module = zircon.module("zircon"),
+                },
+            },
+        }),
+    });
 
     b.installArtifact(exe);
 

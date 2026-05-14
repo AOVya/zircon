@@ -30,20 +30,26 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe = b.addExecutable(.{
-        .name = "myproject",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
     const zircon = b.dependency("zircon", .{
         .target = target,
         .optimize = optimize,
     });
 
-    exe.root_module.addImport("zircon", zircon.module("zircon"));
-    exe.linkLibC();
+    const exe = b.addExecutable(.{
+        .name = "myproject",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{
+                    .name = "zircon",
+                    .module = zircon.module("zircon"),
+                },
+            },
+        }),
+    });
 
     b.installArtifact(exe);
 
@@ -144,7 +150,7 @@ fn msgCallback(message: zircon.Message) ?zircon.Message {
             };
         },
         .PRIVMSG => |msg| {
-            if (std.mem.indexOf(u8, msg.text, prefix_char) != 0) return null;
+            if (std.mem.find(u8, msg.text, prefix_char) != 0) return null;
 
             if (Command.parse(msg.prefix, msg.targets, msg.text)) |command| {
                 return command.handle();
@@ -284,7 +290,7 @@ const real_name = "zirconclient";
 const server = "irc.quakenet.org";
 const port = 6667;
 const tls = false;
-var join_channels = [_][]const u8{"#aviation"};
+var join_channels = [_][]const u8{"#geeks"};
 
 /// Global Debug Allocator singleton.
 var debug_allocator = std.heap.DebugAllocator(.{}).init;
@@ -312,7 +318,6 @@ pub fn main() !void {
     std.debug.print("Connected...\n", .{});
 
     // Spawn a thread to execute clientWorker with our client logic.
-    std.Thread.sleep(6000_000_000);
     const client_worker = try std.Thread.spawn(.{}, clientWorker, .{&client});
     client_worker.detach();
 
@@ -375,12 +380,17 @@ fn spawnThread(_: zircon.Message) bool {
 
 /// This is where we define the logic of our IRC client (handling commands).
 fn clientWorker(client: *zircon.Client) !void {
-    const allocator = debug_allocator.allocator();
-    const stdin_reader = std.io.getStdIn().reader();
+    const stdin = std.Io.File.stdin();
+    var read_buf: [512]u8 = undefined;
+    var file_reader = stdin.reader(client.io, &read_buf);
+    var reader = &file_reader.interface;
     while (true) {
         std.debug.print("[#] <{s}>: ", .{nick});
-        const raw_command = try stdin_reader.readUntilDelimiterAlloc(allocator, '\n', 512);
-        defer allocator.free(raw_command);
+        const raw_with_nl = reader.takeDelimiterInclusive('\n') catch |err| switch (err) {
+            error.EndOfStream => return,
+            else => return err,
+        };
+        const raw_command = std.mem.trimEnd(u8, raw_with_nl, "\r\n");
 
         const command = Command.parse(raw_command) orelse continue;
         switch (command.name) {

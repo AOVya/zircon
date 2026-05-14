@@ -36,7 +36,6 @@ pub fn main() !void {
     std.debug.print("Connected...\n", .{});
 
     // Spawn a thread to execute clientWorker with our client logic.
-    std.Thread.sleep(6000_000_000);
     const client_worker = try std.Thread.spawn(.{}, clientWorker, .{&client});
     client_worker.detach();
 
@@ -99,12 +98,17 @@ fn spawnThread(_: zircon.Message) bool {
 
 /// This is where we define the logic of our IRC client (handling commands).
 fn clientWorker(client: *zircon.Client) !void {
-    const allocator = debug_allocator.allocator();
-    const stdin_reader = std.io.getStdIn().reader();
+    const stdin = std.Io.File.stdin();
+    var read_buf: [512]u8 = undefined;
+    var file_reader = stdin.reader(client.io, &read_buf);
+    var reader = &file_reader.interface;
     while (true) {
         std.debug.print("[#] <{s}>: ", .{nick});
-        const raw_command = try stdin_reader.readUntilDelimiterAlloc(allocator, '\n', 512);
-        defer allocator.free(raw_command);
+        const raw_with_nl = reader.takeDelimiterInclusive('\n') catch |err| switch (err) {
+            error.EndOfStream => return,
+            else => return err,
+        };
+        const raw_command = std.mem.trimEnd(u8, raw_with_nl, "\r\n");
 
         const command = Command.parse(raw_command) orelse continue;
         switch (command.name) {

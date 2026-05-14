@@ -2,6 +2,7 @@
     .name = .simplebot,
     .version = "0.0.0",
     .fingerprint = 0xafa430b4ba4994a6,
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .zircon = .{
             .path = "../../",

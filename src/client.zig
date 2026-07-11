@@ -113,8 +113,8 @@ pub const Client = struct {
             };
             defer root_ca.deinit(self.alloc);
             self.tls_rng_source = std.Random.IoSource{ .io = self.io };
-            self.tls_reader = self.stream.reader(self.io, self.tls_input_buf);
-            self.tls_writer = self.stream.writer(self.io, self.tls_output_buf);
+            self.tls_reader = self.stream.reader(self.io, &self.tls_input_buf);
+            self.tls_writer = self.stream.writer(self.io, &self.tls_output_buf);
             self.connection = tls.client(&self.tls_reader.interface, &self.tls_writer.interface, .{
                 .host = self.cfg.server,
                 .root_ca = root_ca,

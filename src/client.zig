@@ -18,6 +18,11 @@ pub const Client = struct {
     io: std.Io,
     stream: std.Io.net.Stream,
     connection: tls.Connection,
+    tls_input_buf: [tls.input_buffer_len]u8,
+    tls_output_buf: [tls.output_buffer_len]u8,
+    tls_reader: std.Io.net.Stream.Reader,
+    tls_writer: std.Io.net.Stream.Writer,
+    tls_rng_source: std.Random.IoSource,
     replies: std.ArrayList(Message),
     mutex: std.Io.Mutex,
     cond: std.Io.Condition,
@@ -68,6 +73,11 @@ pub const Client = struct {
             .io = undefined,
             .stream = undefined,
             .connection = undefined,
+            .tls_input_buf = undefined,
+            .tls_output_buf = undefined,
+            .tls_reader = undefined,
+            .tls_writer = undefined,
+            .tls_rng_source = undefined,
             .replies = std.ArrayList(Message).empty,
             .mutex = .init,
             .cond = .init,
@@ -102,11 +112,13 @@ pub const Client = struct {
                 return ClientError.TlsHandshakeFailed;
             };
             defer root_ca.deinit(self.alloc);
-            const rng_source = std.Random.IoSource{ .io = self.io };
-            self.connection = tls.clientFromStream(self.io, self.stream, .{
+            self.tls_rng_source = std.Random.IoSource{ .io = self.io };
+            self.tls_reader = self.stream.reader(self.io, self.tls_input_buf);
+            self.tls_writer = self.stream.writer(self.io, self.tls_output_buf);
+            self.connection = tls.client(&self.tls_reader.interface, &self.tls_writer.interface, .{
                 .host = self.cfg.server,
                 .root_ca = root_ca,
-                .rng = rng_source.interface(),
+                .rng = self.tls_rng_source.interface(),
                 .now = std.Io.Clock.real.now(self.io),
             }) catch |err| {
                 utils.debug("TLS handshake failed: {}", .{err});

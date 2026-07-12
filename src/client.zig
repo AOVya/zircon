@@ -391,13 +391,10 @@ pub const Client = struct {
     // - `dst`: Destination arrayList
     // - `n`: Max number of incoming messages to dequeue. If null, dequeue all
     pub fn dequeue_incoming(self: *Client, dst: *std.ArrayList(Message), n: ?usize) void {
-        const items_to_dequeue = undefined;
-        if (n) |limit| {
-            items_to_dequeue =
-                if (limit < self.incoming.items.len) limit else self.incoming.items.len;
-        } else {
-            items_to_dequeue = self.incoming.items.len;
-        }
+        const items_to_dequeue = if (n) |limit|
+            @min(limit, self.incoming.items.len)
+        else
+            self.incoming.items.len;
         std.debug.assert(items_to_dequeue <= dst.capacity);
         dst.clearRetainingCapacity();
         dst.appendSliceAssumeCapacity(self.incoming.items[0..items_to_dequeue]);

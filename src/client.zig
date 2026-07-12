@@ -24,6 +24,7 @@ pub const Client = struct {
     tls_writer: std.Io.net.Stream.Writer,
     tls_rng_source: std.Random.IoSource,
     replies: std.ArrayList(Message),
+    incoming: std.ArrayList(Message),
     mutex: std.Io.Mutex,
     cond: std.Io.Condition,
     cfg: Config,
@@ -79,6 +80,7 @@ pub const Client = struct {
             .tls_writer = undefined,
             .tls_rng_source = undefined,
             .replies = std.ArrayList(Message).empty,
+            .incoming = std.ArrayList(Message).empty,
             .mutex = .init,
             .cond = .init,
             .cfg = cfg,
@@ -91,6 +93,7 @@ pub const Client = struct {
     pub fn deinit(self: *Client) void {
         self.disconnect();
         self.replies.deinit(self.alloc);
+        self.incoming.deinit(self.alloc);
     }
 
     /// Establishes a connection to the IRC server.
@@ -304,6 +307,17 @@ pub const Client = struct {
                     return ClientError.ThreadSpawnFailed;
                 };
             }
+        } else {
+            self.mutex.lock(self.io) catch |err| {
+                utils.debug("Mutex lock failed: {}", .{err});
+                return;
+            };
+            self.incoming.append(self.alloc, msg) catch |err| {
+                utils.debug("Allocating message to incoming queue failed: {}", .{err});
+                return ClientError.MemoryAllocationFailed;
+            };
+            // no cond signal, that is for writer loop
+            self.mutex.unlock(self.io);
         }
     }
 
@@ -369,6 +383,27 @@ pub const Client = struct {
                 try self.handleMessage(raw_msg, loop_config);
             }
         }
+    }
+
+    // Dequeue N incoming messages into dst arrayList.
+    // Dst should be empty or it will leak memory
+    //
+    // - `dst`: Destination arrayList
+    // - `n`: Max number of incoming messages to dequeue. If null, dequeue all
+    pub fn dequeue_incoming(self: *Client, dst: *std.ArrayList(Message), n: ?usize) void {
+        const items_to_dequeue = undefined;
+        if (n) |limit| {
+            items_to_dequeue =
+                if (limit < self.incoming.items.len) limit else self.incoming.items.len;
+        } else {
+            items_to_dequeue = self.incoming.items.len;
+        }
+        std.debug.assert(items_to_dequeue <= dst.capacity);
+        dst.clearRetainingCapacity();
+        dst.appendSliceAssumeCapacity(self.incoming.items[0..items_to_dequeue]);
+        const remaining = self.incoming.items.len - items_to_dequeue;
+        @memmove(self.incoming.items[0..remaining], self.incoming.items[items_to_dequeue..]);
+        self.incoming.shrinkRetainingCapacity(remaining);
     }
 
     /// Writes callback reply messages to the server.

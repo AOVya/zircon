@@ -152,8 +152,8 @@ pub const Client = struct {
     // Sends PASS for servers with password protection
     //
     // - `pass`: Password to the server
-    pub fn pass(self: *Client, pass: []const u8) ClientError!void {
-        try self.sendCommand("PASS {s}{s}", .{ pass, delimiter });
+    pub fn pass(self: *Client, passwd: []const u8) ClientError!void {
+        try self.sendCommand("PASS {s}{s}", .{ passwd, delimiter });
     }
 
     /// Registers the client with the IRC server.

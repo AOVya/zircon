@@ -36,7 +36,6 @@ pub const Client = struct {
         real_name: []const u8,
         server: []const u8,
         port: ?u16,
-        pass: ?[]const u8,
         tls: bool = false,
         channels: [][]const u8,
     };
@@ -150,12 +149,15 @@ pub const Client = struct {
         try self.sendCommand("PONG :{s}{s}", .{ id, delimiter });
     }
 
+    // Sends PASS for servers with password protection
+    //
+    // - `pass`: Password to the server
+    pub fn pass(self: *Client, pass: []const u8) ClientError!void {
+        try self.sendCommand("PASS {s}{s}", .{ pass, delimiter });
+    }
+
     /// Registers the client with the IRC server.
     pub fn register(self: *Client) ClientError!void {
-        if (self.cfg.pass) |pass| {
-            try self.sendCommand("PASS {s}{s}", .{ pass, delimiter });
-        }
-
         try self.sendCommand("NICK {s}{s}USER {s} * * :{s}{s}", .{
             self.cfg.nick,
             delimiter,

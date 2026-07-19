@@ -338,10 +338,10 @@ pub const Client = struct {
     fn getNextMessage(self: *Client) ClientError!?[]const u8 {
         var read_buf: [max_msg_len]u8 = undefined;
         var reader = if (self.cfg.tls) tls: {
-            const tls_reader = self.connection.reader(&read_buf);
+            var tls_reader = self.connection.reader(&read_buf);
             break :tls &tls_reader.interface;
         } else plain: {
-            const plain_reader = self.stream.reader(self.io, &read_buf);
+            var plain_reader = self.stream.reader(self.io, &read_buf);
             break :plain &plain_reader.interface;
         };
         const raw_msg_with_nl = reader.takeDelimiterInclusive('\n') catch |err| switch (err) {

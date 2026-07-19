@@ -269,7 +269,7 @@ pub const Client = struct {
         self.cond.signal(self.io);
     }
 
-    fn handleMessage(self: *Client, raw_msg: []u8, loop_config: LoopConfig) ClientError!void {
+    fn handleMessage(self: *Client, raw_msg: []const u8, loop_config: LoopConfig) ClientError!void {
         if (raw_msg.len < 4) {
             return;
         }
@@ -337,7 +337,7 @@ pub const Client = struct {
 
     fn getNextMessage(self: *Client) ClientError!?[]const u8 {
         var read_buf: [max_msg_len]u8 = undefined;
-        const reader = if (self.cfgt.tls) tls: {
+        const reader = if (self.cfg.tls) tls: {
             const tls_reader = self.connection.reader(&read_buf);
             break :tls &tls_reader.interface;
         } else plain: {

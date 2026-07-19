@@ -344,7 +344,7 @@ pub const Client = struct {
             const plain_reader = self.stream.reader(self.io, &read_buf);
             break :plain &plain_reader.interface;
         };
-        const raw_msg_with_nl = reader.interface.takeDelimiterInclusive('\n') catch |err| switch (err) {
+        const raw_msg_with_nl = reader.takeDelimiterInclusive('\n') catch |err| switch (err) {
             error.EndOfStream => {
                 utils.debug("Connection Closed\n", .{});
                 return null;

@@ -337,7 +337,13 @@ pub const Client = struct {
 
     fn getNextMessage(self: *Client) ClientError!?[]const u8 {
         var read_buf: [max_msg_len]u8 = undefined;
-        var reader = if (self.cfg.tls) self.connection.reader(&read_buf) else self.stream.reader(self.io, &read_buf);
+        const reader = if (self.cfgt.tls) tls: {
+            const tls_reader = self.connection.reader(&read_buf);
+            break :tls &tls_reader.interface;
+        } else plain: {
+            const plain_reader = self.stream.reader(self.io, &read_buf);
+            break :plain &plain_reader.interface;
+        };
         const raw_msg_with_nl = reader.interface.takeDelimiterInclusive('\n') catch |err| switch (err) {
             error.EndOfStream => {
                 utils.debug("Connection Closed\n", .{});
@@ -360,10 +366,10 @@ pub const Client = struct {
     ///
     /// - `loop_config`: Main event loop configuration.
     fn readLoop(self: *Client, loop_config: LoopConfig) ClientError!void {
-        while (true) {
-            const raw_msg = try self.getNextMessage();
-            try self.handleMessage(raw_msg, loop_config);
+        while (try self.getNextMessage()) |msg| {
+            try self.handleMessage(msg, loop_config);
         }
+        return;
     }
 
     // Dequeue N incoming messages into dst arrayList.

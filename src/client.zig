@@ -337,7 +337,7 @@ pub const Client = struct {
 
     fn getNextMessage(self: *Client) ClientError!?[]const u8 {
         var read_buf: [max_msg_len]u8 = undefined;
-        const reader = if (self.cfg.tls) tls: {
+        var reader = if (self.cfg.tls) tls: {
             const tls_reader = self.connection.reader(&read_buf);
             break :tls &tls_reader.interface;
         } else plain: {

@@ -335,55 +335,34 @@ pub const Client = struct {
         try self.readLoop(loop_config);
     }
 
+    fn getNextMessage(self: *Client) ClientError!?[]const u8 {
+        var read_buf: [max_msg_len]u8 = undefined;
+        var reader = if (self.cfg.tls) self.connection.reader(&read_buf) else self.stream.reader(self.io, &read_buf);
+        const raw_msg_with_nl = reader.interface.takeDelimiterInclusive('\n') catch |err| switch (err) {
+            error.EndOfStream => {
+                utils.debug("Connection Closed\n", .{});
+                return null;
+            },
+            else => {
+                utils.debug("Network read failed: {}\n", .{err});
+                return ClientError.NetworkReadFailed;
+            },
+        };
+        if (raw_msg_with_nl.len == 0) {
+            utils.debug("Connection Closed\n", .{});
+            return null;
+        }
+        const raw_msg = raw_msg_with_nl[0 .. raw_msg_with_nl.len - 1];
+        return raw_msg;
+    }
+
     /// Reads messages from the server and processes them.
     ///
     /// - `loop_config`: Main event loop configuration.
     fn readLoop(self: *Client, loop_config: LoopConfig) ClientError!void {
-        var read_buf: [max_msg_len]u8 = undefined;
-        if (self.cfg.tls) {
-            var reader = self.connection.reader(&read_buf);
-            while (true) {
-                const raw_msg_with_nl = reader.interface.takeDelimiterInclusive('\n') catch |err| switch (err) {
-                    error.EndOfStream => {
-                        utils.debug("Connection Closed\n", .{});
-                        return;
-                    },
-                    else => {
-                        utils.debug("Network read failed: {}\n", .{err});
-                        return ClientError.NetworkReadFailed;
-                    },
-                };
-
-                if (raw_msg_with_nl.len == 0) {
-                    utils.debug("Connection Closed\n", .{});
-                    return;
-                }
-
-                const raw_msg = raw_msg_with_nl[0 .. raw_msg_with_nl.len - 1];
-                try self.handleMessage(raw_msg, loop_config);
-            }
-        } else {
-            var reader = self.stream.reader(self.io, &read_buf);
-            while (true) {
-                const raw_msg_with_nl = reader.interface.takeDelimiterInclusive('\n') catch |err| switch (err) {
-                    error.EndOfStream => {
-                        utils.debug("Connection Closed\n", .{});
-                        return;
-                    },
-                    else => {
-                        utils.debug("Network read failed: {}\n", .{err});
-                        return ClientError.NetworkReadFailed;
-                    },
-                };
-
-                if (raw_msg_with_nl.len == 0) {
-                    utils.debug("Connection Closed\n", .{});
-                    return;
-                }
-
-                const raw_msg = raw_msg_with_nl[0 .. raw_msg_with_nl.len - 1];
-                try self.handleMessage(raw_msg, loop_config);
-            }
+        while (true) {
+            const raw_msg = try self.getNextMessage();
+            try self.handleMessage(raw_msg, loop_config);
         }
     }
 
